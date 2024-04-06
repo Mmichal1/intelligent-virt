@@ -34,5 +34,5 @@ plt.ylabel("Accuracy")
 plt.ylim([0.5, 1])
 plt.legend(loc="lower right")
 
-test_loss, test_acc = model.evaluate(test_images, test_labels, verbose=2)
-print(test_acc)
+# test_loss, test_acc = model.evaluate(test_images, test_labels, verbose=2)
+# print(test_acc)
