@@ -2,7 +2,7 @@ import os
 import json
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from keras._tf_keras.keras.preprocessing.image import load_img, img_to_array
 from sklearn.model_selection import train_test_split
 
 # Path to the dataset
@@ -45,8 +45,8 @@ images, bboxes, labels = load_data()
 X_train, X_val, y_train, y_val = train_test_split(images, (bboxes, labels), test_size=0.2, random_state=42)
 
 
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, Flatten, Dense
+from keras._tf_keras.keras.models import Model
+from keras._tf_keras.keras.layers import Input, Conv2D, MaxPooling2D, Flatten, Dense
 
 
 def create_model(input_shape):
