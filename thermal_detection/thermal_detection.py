@@ -21,7 +21,9 @@ def load_coco_data(annotations_path: Path):
 
 
 # Function to load a limited number of images and annotations for people only
-def load_data(annotations_path: Path, data_path: Path, limit=None, target_size=(160, 128), show_image=True):
+def load_data(
+    annotations_path: Path, data_path: Path, limit=None, target_size=(160, 128), show_image=False, scale_down_factor=1
+):
     images = []
     bboxes = []
     labels = []
@@ -40,21 +42,25 @@ def load_data(annotations_path: Path, data_path: Path, limit=None, target_size=(
 
         img_id = img_data["id"]
         img_annotations = [
-            ann for ann in coco_data["annotations"] if ann["image_id"] == img_id and ann["category_id"] == 3
-        ]  # Assuming category_id 3 is for people
+            ann
+            for ann in coco_data["annotations"]
+            if ann["image_id"] == img_id
+            and ann["category_id"] == 3
+            and "occluded" in ann["extra_info"]
+            and ann["extra_info"]["occluded"] == "no_(fully_visible)"
+            and "truncated" not in ann["extra_info"]
+        ]  # Assuming category_id 3 is for cars
 
         if img_annotations:
             for ann in img_annotations:
                 original_bbox = ann["bbox"]
 
                 # Rescale bounding box
-                scale_x = target_size[0] / 640
-                scale_y = target_size[1] / 512
                 bbox = [
-                    int(original_bbox[0] * scale_x),
-                    int(original_bbox[1] * scale_y),
-                    int(original_bbox[2] * scale_x),
-                    int(original_bbox[3] * scale_y),
+                    int(original_bbox[0] / scale_down_factor),
+                    int(original_bbox[1] / scale_down_factor),
+                    int(original_bbox[2] / scale_down_factor),
+                    int(original_bbox[3] / scale_down_factor),
                 ]
 
                 label = 1  # Person label
@@ -77,6 +83,7 @@ def display_image_with_bboxes(image, bbox, target_size):
     ax.imshow(image)
 
     # Draw bounding boxes
+    print(bbox)
     rect = Rectangle((bbox[0], bbox[1]), bbox[2], bbox[3], edgecolor="r", facecolor="none")
     ax.add_patch(rect)
 
@@ -122,23 +129,29 @@ def main(
         None,
         help="Path to dataset directory containing images and coco.json",
     ),
-    limit: int = typer.Option(100, help="Limit the number of images to load"),
-    epochs: int = typer.Option(5, help="Number of epochs to train"),
+    limit: int = typer.Option(1000, help="Limit the number of images to load"),
+    epochs: int = typer.Option(20, help="Number of epochs to train"),
     batch_size: int = typer.Option(32, help="Batch size for training"),
 ):
     # Load a limited number of images (e.g., 100 images)
     annotations_path = dataset_path / "coco.json"
-
-    images, bboxes, labels = load_data(annotations_path, dataset_path, limit=limit)
+    scale_down_factor = 4
+    target_width = int(640 / scale_down_factor)
+    target_height = int(512 / scale_down_factor)
+    images, bboxes, labels = load_data(
+        annotations_path,
+        dataset_path,
+        limit=limit,
+        target_size=(target_height, target_width),
+        scale_down_factor=scale_down_factor,
+    )
 
     # Split the data into training and validation sets
     X_train, X_val, y_train_bboxes, y_val_bboxes, y_train_labels, y_val_labels = train_test_split(
         images, bboxes, labels, test_size=0.2, random_state=42
     )
 
-    target_width: int = 160
-    target_height: int = 128
-    input_shape = (target_width, target_height, 3)
+    input_shape = (target_height, target_width, 3)
     model = create_model(input_shape)
     model.summary()
 
@@ -160,11 +173,37 @@ def main(
     evaluation = model.evaluate(X_val, {"bbox_output": y_val_bboxes, "label_output": y_val_labels})
     print(f"Evaluation results: {evaluation}")
 
-    # Unpack the values based on the actual number of returned values
-    val_loss, val_bbox_loss, val_label_loss, val_bbox_mae, val_label_accuracy = evaluation
+    # Print training and validation metrics
+    print("Training and Validation Metrics:")
+    for key in history.history.keys():
+        print(f"{key}: {history.history[key]}")
 
-    print(f"Validation bbox MAE: {val_bbox_mae}")
-    print(f"Validation label accuracy: {val_label_accuracy}")
+    # Optionally, plot the training and validation metrics
+    plot_metrics(history)
+
+
+def plot_metrics(history):
+    # Plot training & validation accuracy values
+    plt.figure(figsize=(12, 4))
+
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history["label_output_accuracy"])
+    plt.plot(history.history["val_label_output_accuracy"])
+    plt.title("Model accuracy")
+    plt.ylabel("Accuracy")
+    plt.xlabel("Epoch")
+    plt.legend(["Train", "Validation"], loc="upper left")
+
+    # Plot training & validation loss values
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history["loss"])
+    plt.plot(history.history["val_loss"])
+    plt.title("Model loss")
+    plt.ylabel("Loss")
+    plt.xlabel("Epoch")
+    plt.legend(["Train", "Validation"], loc="upper left")
+
+    plt.show()
 
 
 if __name__ == "__main__":
