@@ -2,6 +2,7 @@ import os
 import json
 import typer
 import random
+import math
 import matplotlib.pyplot as plt
 import numpy as np
 import tensorflow as tf
@@ -10,72 +11,92 @@ from pathlib import Path
 from keras._tf_keras.keras.preprocessing.image import load_img, img_to_array
 from keras._tf_keras.keras.models import Model
 from keras._tf_keras.keras.optimizers import Adam
+from keras._tf_keras.keras.utils import Sequence
 from keras._tf_keras.keras.layers import Input, Conv2D, MaxPooling2D, Flatten, Dense, BatchNormalization, Dropout
 from sklearn.model_selection import train_test_split
 
 
-# Load annotations
 def load_coco_data(annotations_path: Path):
     with annotations_path.open("r") as f:
         return json.load(f)
 
 
-# Function to load a limited number of images and annotations for people only
-def load_data(
-    annotations_path: Path, data_path: Path, limit=None, target_size=(160, 128), show_image=False, scale_down_factor=1
-):
-    images = []
-    bboxes = []
-    labels = []
-    count = 0
+def resize_bbox(original_bbox, scale_down_factor):
+    return [
+        int(original_bbox[0] / scale_down_factor) - 2,
+        int(original_bbox[1] / scale_down_factor) - 2,
+        int(original_bbox[2] / scale_down_factor) + 2,
+        int(original_bbox[3] / scale_down_factor) + 2,
+    ]
 
-    coco_data = load_coco_data(annotations_path)
 
-    for img_data in coco_data["images"]:
-        if limit and count >= limit:
-            break
+class DataGenerator(Sequence):
+    def __init__(
+        self,
+        annotations_path,
+        data_path,
+        scale_down_factor,
+        batch_size=32,
+        target_size=(160, 128),
+        limit=None,
+        shuffle=True,
+    ):
+        self.annotations_path = annotations_path
+        self.data_path = data_path
+        self.scale_down_factor = scale_down_factor
+        self.batch_size = batch_size
+        self.target_size = target_size
+        self.coco_data = load_coco_data(annotations_path)
+        self.image_ids = [img["id"] for img in self.coco_data["images"][:limit]]
+        self.shuffle = shuffle
+        self.on_epoch_end()
 
-        img_path: Path = data_path / img_data["file_name"]
-        image = load_img(img_path, target_size=target_size)  # Rescale to target size
-        image = img_to_array(image)
-        image /= 255.0  # Normalize to [0, 1]
+    def __len__(self):
+        return math.ceil(len(self.image_ids) / self.batch_size)
 
-        img_id = img_data["id"]
-        img_annotations = [
-            ann
-            for ann in coco_data["annotations"]
-            if ann["image_id"] == img_id
-            and ann["category_id"] == 3
-            and "occluded" in ann["extra_info"]
-            and ann["extra_info"]["occluded"] == "no_(fully_visible)"
-            and "truncated" not in ann["extra_info"]
-        ]  # Assuming category_id 3 is for cars
+    def on_epoch_end(self):
+        if self.shuffle:
+            np.random.shuffle(self.image_ids)
 
-        if img_annotations:
-            for ann in img_annotations:
-                original_bbox = ann["bbox"]
+    def __getitem__(self, index):
+        batch_image_ids = self.image_ids[index * self.batch_size : (index + 1) * self.batch_size]
+        images, bboxes, labels = self.__data_generation(batch_image_ids)
+        return np.array(images), {"bbox_output": np.array(bboxes), "label_output": np.array(labels)}
 
-                # Rescale bounding box
-                bbox = [
-                    int(original_bbox[0] / scale_down_factor),
-                    int(original_bbox[1] / scale_down_factor),
-                    int(original_bbox[2] / scale_down_factor),
-                    int(original_bbox[3] / scale_down_factor),
-                ]
+    def __data_generation(self, batch_image_ids):
+        images = []
+        bboxes = []
+        labels = []
 
-                label = 1  # Person label
+        for img_id in batch_image_ids:
+            img_data = next(img for img in self.coco_data["images"] if img["id"] == img_id)
+            img_path = self.data_path / img_data["file_name"]
+            image = load_img(img_path, target_size=self.target_size)
+            image = img_to_array(image)
+            image /= 255.0
 
-                images.append(image)
-                bboxes.append(bbox)
-                labels.append(label)
-            count += 1
+            img_annotations = [
+                ann
+                for ann in self.coco_data["annotations"]
+                if ann["image_id"] == img_id
+                and ann["category_id"] == 3
+                and "occluded" in ann["extra_info"]
+                and ann["extra_info"]["occluded"] == "no_(fully_visible)"
+                and "truncated" not in ann["extra_info"]
+            ]  # Assuming category_id 3 is for cars
 
-    if show_image and images:
-        # Display one random image with bounding boxes
-        idx = random.randint(0, len(images) - 1)
-        display_image_with_bboxes(images[idx], bboxes[idx], target_size)
+            if img_annotations:
+                for ann in img_annotations:
+                    original_bbox = ann["bbox"]
+                    bbox = resize_bbox(original_bbox, self.scale_down_factor)
 
-    return np.array(images), np.array(bboxes), np.array(labels)
+                    label = 1  # Person label
+
+                    images.append(image)
+                    bboxes.append(bbox)
+                    labels.append(label)
+
+        return images, bboxes, labels
 
 
 def display_image_with_bboxes(image, bbox, target_size):
@@ -125,60 +146,81 @@ app = typer.Typer(add_completion=False)
 
 @app.command()
 def main(
-    dataset_path: Path = typer.Argument(
+    data_path: Path = typer.Argument(
         None,
         help="Path to dataset directory containing images and coco.json",
     ),
-    limit: int = typer.Option(1000, help="Limit the number of images to load"),
+    limit: int = typer.Option(100, help="Limit the number of images to load"),
     epochs: int = typer.Option(20, help="Number of epochs to train"),
     batch_size: int = typer.Option(32, help="Batch size for training"),
+    show_image: bool = typer.Option(True, help="Show one random image with bounding boxes"),
+    scale_down_factor: int = typer.Option(2, help="How much to scale down images"),
 ):
-    # Load a limited number of images (e.g., 100 images)
-    annotations_path = dataset_path / "coco.json"
-    scale_down_factor = 4
+    annotations_path = data_path / "coco.json"
+    dataset_path = data_path
+
     target_width = int(640 / scale_down_factor)
     target_height = int(512 / scale_down_factor)
-    images, bboxes, labels = load_data(
-        annotations_path,
-        dataset_path,
-        limit=limit,
-        target_size=(target_height, target_width),
-        scale_down_factor=scale_down_factor,
-    )
-
-    # Split the data into training and validation sets
-    X_train, X_val, y_train_bboxes, y_val_bboxes, y_train_labels, y_val_labels = train_test_split(
-        images, bboxes, labels, test_size=0.2, random_state=42
-    )
-
+    target_size = (target_height, target_width)
     input_shape = (target_height, target_width, 3)
+
+    if show_image:
+        # Show one random image with bounding boxes
+        data_gen = DataGenerator(
+            annotations_path,
+            dataset_path,
+            scale_down_factor,
+            batch_size=1,
+            target_size=target_size,
+            limit=limit,
+            shuffle=True,
+        )
+        images, bboxes_labels = data_gen.__getitem__(0)
+        images = images[0]
+        bboxes = bboxes_labels["bbox_output"][0]
+        display_image_with_bboxes(images, bboxes, target_size)
+
     model = create_model(input_shape)
     model.summary()
 
     model.compile(
         optimizer=Adam(learning_rate=1e-4),
         loss={"bbox_output": "mse", "label_output": "binary_crossentropy"},
-        metrics={"bbox_output": "mae", "label_output": "accuracy"},
+        metrics={"label_output": "accuracy"},
+    )
+
+    train_gen = DataGenerator(
+        annotations_path,
+        data_path,
+        scale_down_factor,
+        batch_size=batch_size,
+        target_size=target_size,
+        limit=limit,
+        shuffle=True,
+    )
+    val_gen = DataGenerator(
+        annotations_path,
+        data_path,
+        scale_down_factor,
+        batch_size=batch_size,
+        target_size=target_size,
+        limit=limit,
+        shuffle=False,
     )
 
     history = model.fit(
-        X_train,
-        {"bbox_output": y_train_bboxes, "label_output": y_train_labels},
-        validation_data=(X_val, {"bbox_output": y_val_bboxes, "label_output": y_val_labels}),
+        train_gen,
+        validation_data=val_gen,
         epochs=epochs,
-        batch_size=batch_size,
     )
 
-    # Evaluate the model and print the output to see what it returns
-    evaluation = model.evaluate(X_val, {"bbox_output": y_val_bboxes, "label_output": y_val_labels})
+    evaluation = model.evaluate(val_gen)
     print(f"Evaluation results: {evaluation}")
 
-    # Print training and validation metrics
     print("Training and Validation Metrics:")
     for key in history.history.keys():
         print(f"{key}: {history.history[key]}")
 
-    # Optionally, plot the training and validation metrics
     plot_metrics(history)
 
 
