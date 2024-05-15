@@ -102,7 +102,6 @@ def display_image_with_bboxes(image, bbox):
     fig, ax = plt.subplots(1)
     ax.imshow(image)
 
-    # Draw bounding boxes
     rect = Rectangle((bbox[0], bbox[1]), bbox[2], bbox[3], edgecolor="r", facecolor="none")
     ax.add_patch(rect)
 
@@ -136,7 +135,6 @@ def create_model(input_shape):
     x = Dense(512, activation="relu")(x)
     x = Dropout(0.5)(x)
 
-    # Output layers: one for bounding boxes, one for labels
     bbox_output = Dense(4, name="bbox_output")(x)
     label_output = Dense(1, activation="sigmoid", name="label_output")(x)
 
@@ -168,7 +166,6 @@ def main(
     input_shape = (target_height, target_width, 3)
 
     if show_image:
-        # Show one random image with bounding boxes
         data_gen = DataGenerator(
             annotations_path,
             dataset_path,
@@ -228,7 +225,6 @@ def main(
 
 
 def plot_metrics(history):
-    # Plot training & validation accuracy values
     plt.figure(figsize=(12, 4))
 
     plt.subplot(1, 2, 1)
@@ -239,7 +235,6 @@ def plot_metrics(history):
     plt.xlabel("Epoch")
     plt.legend(["Train", "Validation"], loc="upper left")
 
-    # Plot training & validation loss values
     plt.subplot(1, 2, 2)
     plt.plot(history.history["loss"])
     plt.plot(history.history["val_loss"])
@@ -248,7 +243,8 @@ def plot_metrics(history):
     plt.xlabel("Epoch")
     plt.legend(["Train", "Validation"], loc="upper left")
 
-    plt.show()
+    plt.savefig("training_validation_metrics.png")
+    # plt.show()
 
 
 if __name__ == "__main__":
