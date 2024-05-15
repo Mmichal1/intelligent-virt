@@ -1,115 +1,100 @@
-import cv2
-import json
 import os
-import typer
-import matplotlib.pyplot as plt
-import glob
+import json
 import numpy as np
-from pathlib import Path
-from keras.models import Sequential
-from keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
-from keras.preprocessing.image import img_to_array
+import tensorflow as tf
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from sklearn.model_selection import train_test_split
 
+# Path to the dataset
+DATASET_PATH = "path_to_flir_dataset"
+ANNOTATIONS_PATH = os.path.join(DATASET_PATH, "coco_annotations.json")
 
-def load_and_label_images(json_path, data_directory):
+# Load annotations
+with open(ANNOTATIONS_PATH, "r") as f:
+    annotations = json.load(f)
+
+
+# Function to load images and annotations
+def load_data():
     images = []
+    bboxes = []
     labels = []
 
-    with open(json_path, "r") as f:
-        data = json.load(f)
+    for img_data in annotations["images"]:
+        img_path = os.path.join(DATASET_PATH, img_data["file_name"])
+        image = load_img(img_path, target_size=(256, 256))
+        image = img_to_array(image)
 
-    for frame in data["frames"]:
-        dataset_frame_id = frame["datasetFrameId"]
-        search_pattern = os.path.join(data_directory, f"*-{dataset_frame_id}.jpg")
-        image_files = glob.glob(search_pattern)
+        img_id = img_data["id"]
+        img_annotations = [ann for ann in annotations["annotations"] if ann["image_id"] == img_id]
 
-        if not image_files:
-            print(f"Image file matching the dataset frame ID {dataset_frame_id} not found.")
-            continue  # Skip this frame if the image file is not found
-        elif len(image_files) > 1:
-            print(f"Warning: Multiple files found for {dataset_frame_id}, using the first one.")
+        for ann in img_annotations:
+            bbox = ann["bbox"]
+            label = ann["category_id"]
 
-        image_path = image_files[0]
-        img = cv2.imread(image_path)
-        if img is None:
-            continue
+            images.append(image)
+            bboxes.append(bbox)
+            labels.append(label)
 
-        images.append(img)
-
-        # Label the image as '1' if it contains at least one person
-        labels.append(int(any("person" in ann["labels"] for ann in frame["annotations"])))
-
-    return np.array(images), np.array(labels)
+    return np.array(images), np.array(bboxes), np.array(labels)
 
 
-def build_model():
-    model = Sequential(
-        [
-            Conv2D(32, (3, 3), activation="relu", input_shape=(256, 320, 3)),
-            MaxPooling2D((2, 2)),
-            Conv2D(64, (3, 3), activation="relu"),
-            MaxPooling2D((2, 2)),
-            Flatten(),
-            Dense(64, activation="relu"),
-            Dense(1, activation="sigmoid"),
-        ]
-    )
-    model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
+images, bboxes, labels = load_data()
+
+# Split the data into training and validation sets
+X_train, X_val, y_train, y_val = train_test_split(images, (bboxes, labels), test_size=0.2, random_state=42)
+
+
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Conv2D, MaxPooling2D, Flatten, Dense
+
+
+def create_model(input_shape):
+    inputs = Input(shape=input_shape)
+
+    x = Conv2D(32, (3, 3), activation="relu")(inputs)
+    x = MaxPooling2D((2, 2))(x)
+    x = Conv2D(64, (3, 3), activation="relu")(x)
+    x = MaxPooling2D((2, 2))(x)
+    x = Conv2D(128, (3, 3), activation="relu")(x)
+    x = MaxPooling2D((2, 2))(x)
+
+    x = Flatten()(x)
+    x = Dense(128, activation="relu")(x)
+
+    # Output layers: one for bounding boxes, one for labels
+    bbox_output = Dense(4, name="bbox_output")(x)
+    label_output = Dense(len(annotations["categories"]), activation="softmax", name="label_output")(x)
+
+    model = Model(inputs=inputs, outputs=[bbox_output, label_output])
     return model
 
 
-app = typer.Typer(add_completion=False)
+input_shape = (256, 256, 3)
+model = create_model(input_shape)
+model.summary()
 
+input_shape = (256, 256, 3)
+model = create_model(input_shape)
+model.summary()
 
-@app.command()
-def main(
-    train_json_path: Path = typer.Argument(
-        None,
-        help="Path to json",
-    ),
-    train_data_path: str = typer.Argument(
-        None,
-        help="Path to data",
-    ),
-    val_json_path: Path = typer.Argument(
-        None,
-        help="Path to json",
-    ),
-    val_data_path: str = typer.Argument(
-        None,
-        help="Path to data",
-    ),
-):
+model.compile(
+    optimizer="adam",
+    loss={"bbox_output": "mse", "label_output": "sparse_categorical_crossentropy"},
+    metrics={"bbox_output": "mae", "label_output": "accuracy"},
+)
 
-    X_train, y_train = load_and_label_images(train_json_path, train_data_path)
-    X_val, y_val = load_and_label_images(val_json_path, val_data_path)
+history = model.fit(
+    X_train,
+    {"bbox_output": y_train[0], "label_output": y_train[1]},
+    validation_data=(X_val, {"bbox_output": y_val[0], "label_output": y_val[1]}),
+    epochs=20,
+    batch_size=32,
+)
 
-    model = build_model()
-    history = model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_val, y_val))
+val_loss, val_bbox_loss, val_label_loss, val_bbox_mae, val_label_accuracy = model.evaluate(
+    X_val, {"bbox_output": y_val[0], "label_output": y_val[1]}
+)
 
-    # Plotting the training and validation loss
-    plt.figure(figsize=(8, 4))
-    plt.subplot(1, 2, 1)
-    plt.plot(history.history["accuracy"], label="Training Accuracy")
-    plt.plot(history.history["val_accuracy"], label="Validation Accuracy")
-    plt.title("Training and Validation Accuracy")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
-    plt.legend()
-
-    plt.subplot(1, 2, 2)
-    plt.plot(history.history["loss"], label="Training Loss")
-    plt.plot(history.history["val_loss"], label="Validation Loss")
-    plt.title("Training and Validation Loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.legend()
-
-    plt.tight_layout()
-    plt.savefig("training_validation_metrics.png")  # Save the plot as a PNG file
-    plt.close()  # Close the plot to free up memory
-
-
-if __name__ == "__main__":
-    app()
+print(f"Validation bbox MAE: {val_bbox_mae}")
+print(f"Validation label accuracy: {val_label_accuracy}")
