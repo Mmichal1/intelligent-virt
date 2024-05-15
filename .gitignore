@@ -1,4 +1,5 @@
 FLIR_ADAS_v2/
 dataset/
 venv/
+models/
 settings.json

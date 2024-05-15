@@ -1,7 +1,5 @@
-import os
 import json
 import typer
-import random
 import math
 import matplotlib.pyplot as plt
 import numpy as np
@@ -13,7 +11,6 @@ from keras._tf_keras.keras.models import Model
 from keras._tf_keras.keras.optimizers import Adam
 from keras._tf_keras.keras.utils import Sequence
 from keras._tf_keras.keras.layers import Input, Conv2D, MaxPooling2D, Flatten, Dense, BatchNormalization, Dropout
-from sklearn.model_selection import train_test_split
 
 
 def load_coco_data(annotations_path: Path):
@@ -40,6 +37,7 @@ class DataGenerator(Sequence):
         target_size=(160, 128),
         limit=None,
         shuffle=True,
+        **kwargs,
     ):
         self.annotations_path = annotations_path
         self.data_path = data_path
@@ -50,6 +48,7 @@ class DataGenerator(Sequence):
         self.image_ids = [img["id"] for img in self.coco_data["images"][:limit]]
         self.shuffle = shuffle
         self.on_epoch_end()
+        super().__init__(**kwargs)
 
     def __len__(self):
         return math.ceil(len(self.image_ids) / self.batch_size)
@@ -99,12 +98,11 @@ class DataGenerator(Sequence):
         return images, bboxes, labels
 
 
-def display_image_with_bboxes(image, bbox, target_size):
+def display_image_with_bboxes(image, bbox):
     fig, ax = plt.subplots(1)
     ax.imshow(image)
 
     # Draw bounding boxes
-    print(bbox)
     rect = Rectangle((bbox[0], bbox[1]), bbox[2], bbox[3], edgecolor="r", facecolor="none")
     ax.add_patch(rect)
 
@@ -129,8 +127,13 @@ def create_model(input_shape):
     x = MaxPooling2D((2, 2))(x)
     x = Dropout(0.25)(x)
 
+    x = Conv2D(256, (3, 3), activation="relu")(x)
+    x = BatchNormalization()(x)
+    x = MaxPooling2D((2, 2))(x)
+    x = Dropout(0.25)(x)
+
     x = Flatten()(x)
-    x = Dense(128, activation="relu")(x)
+    x = Dense(512, activation="relu")(x)
     x = Dropout(0.5)(x)
 
     # Output layers: one for bounding boxes, one for labels
@@ -153,7 +156,7 @@ def main(
     limit: int = typer.Option(100, help="Limit the number of images to load"),
     epochs: int = typer.Option(20, help="Number of epochs to train"),
     batch_size: int = typer.Option(32, help="Batch size for training"),
-    show_image: bool = typer.Option(True, help="Show one random image with bounding boxes"),
+    show_image: bool = typer.Option(False, help="Show one random image with bounding boxes"),
     scale_down_factor: int = typer.Option(2, help="How much to scale down images"),
 ):
     annotations_path = data_path / "coco.json"
@@ -178,13 +181,13 @@ def main(
         images, bboxes_labels = data_gen.__getitem__(0)
         images = images[0]
         bboxes = bboxes_labels["bbox_output"][0]
-        display_image_with_bboxes(images, bboxes, target_size)
+        display_image_with_bboxes(images, bboxes)
 
     model = create_model(input_shape)
     model.summary()
 
     model.compile(
-        optimizer=Adam(learning_rate=1e-4),
+        optimizer=Adam(learning_rate=1e-4),  # type: ignore
         loss={"bbox_output": "mse", "label_output": "binary_crossentropy"},
         metrics={"label_output": "accuracy"},
     )
