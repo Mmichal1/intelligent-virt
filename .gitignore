@@ -1,5 +1,6 @@
 FLIR_ADAS_v2/
 dataset/
 venv/
+cocoapi/
 models/
 settings.json
